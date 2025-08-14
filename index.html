@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice Recorder • 9s Downloadable</title>
+<style>
+  :root {
+    --bg: #f2f3f5;
+    --card: #ffffff;
+    --text: #0f172a;
+    --muted: #64748b;
+    --accent: #ff9f0a;
+    --danger: #ef4444;
+    --ok: #10b981;
+    --download: #3b82f6;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    color: var(--text);
+    display: grid;
+    place-items: center;
+  }
+  .app {
+    width: min(420px, 92vw);
+    background: var(--card);
+    border-radius: 28px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+    padding: 22px;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .title { font-size: 18px; font-weight: 700; letter-spacing: 0.2px; }
+  .badge { font-size: 12px; color: var(--muted); background: #f7f8fa; border-radius: 999px; padding: 6px 10px; }
+  .screen { background: #fafafa; border-radius: 20px; padding: 18px; text-align: center; }
+  .timer { font-variant-numeric: tabular-nums; font-size: 42px; font-weight: 700; margin: 4px 0 8px; }
+  .status { font-size: 14px; color: var(--muted); min-height: 20px; }
+  .progress { height: 8px; background: #eceef1; border-radius: 999px; overflow: hidden; margin-top: 10px; }
+  .bar { height: 100%; width: 0%; background: var(--accent); transition: width 0.05s linear; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 18px; }
+  button {
+    -webkit-tap-highlight-color: transparent;
+    appearance: none;
+    border: 0;
+    border-radius: 16px;
+    padding: 14px 10px;
+    font-size: 16px;
+    font-weight: 600;
+    background: #111827;
+    color: white;
+    cursor: pointer;
+    box-shadow: 0 6px 16px rgba(17,24,39,0.15);
+    transition: transform 0.04s ease, filter 0.2s ease, opacity 0.2s ease;
+  }
+  button:active { transform: translateY(1px); }
+  button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  .accent { background: var(--accent); color: #111827; }
+  .danger { background: var(--danger); }
+  .ok { background: var(--ok); }
+  .download { background: var(--download); }
+  .audio-wrap {
+    margin-top: 16px;
+    background: #f7f8fa;
+    border-radius: 16px;
+    padding: 12px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .tip { margin-top: 10px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <main class="app" role="application" aria-label="9 second voice recorder">
+    <div class="header">
+      <div class="title">Voice recorder</div>
+      <div class="badge" id="supportBadge">Checking mic…</div>
+    </div>
+
+    <section class="screen">
+      <div class="status" id="status">Ready</div>
+      <div class="timer" id="timer">00:09.000</div>
+      <div class="progress" aria-hidden="true"><div class="bar" id="bar"></div></div>
+
+      <div class="controls">
+        <button id="recordBtn" class="accent" aria-pressed="false">Record</button>
+        <button id="stopBtn" class="danger" disabled>Stop</button>
+        <button id="playBtn" class="ok" disabled>Play</button>
+      </div>
+
+      <div class="audio-wrap">
+        <audio id="player" controls preload="metadata" style="flex:1"></audio>
+        <button id="downloadBtn" class="download" disabled>⬇</button>
+      </div>
+
+      <div class="tip">Max 9 seconds. Works offline after load. Download available.</div>
+    </section>
+  </main>
+
+<script>
+(() => {
+  const MAX_MS = 9000;
+  const timerEl = document.getElementById('timer');
+  const statusEl = document.getElementById('status');
+  const barEl = document.getElementById('bar');
+  const recordBtn = document.getElementById('recordBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const playBtn = document.getElementById('playBtn');
+  const player = document.getElementById('player');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const supportBadge = document.getElementById('supportBadge');
+
+  let mediaRecorder = null;
+  let stream = null;
+  let chunks = [];
+  let startTs = 0;
+  let rafId = null;
+  let autoStopId = null;
+  let currentBlobUrl = null;
+
+  function fmt(ms) {
+    const m = Math.max(0, ms);
+    const s = Math.floor(m / 1000);
+    const rem = m % 1000;
+    return `00:${String(9 - s).padStart(2, '0')}.${String(1000 - rem === 1000 ? 0 : 1000 - rem).toString().padStart(3, '0')}`;
+  }
+
+  function updateProgress() {
+    const elapsed = Date.now() - startTs;
+    const clamped = Math.min(elapsed, MAX_MS);
+    const pct = (clamped / MAX_MS) * 100;
+    barEl.style.width = pct + '%';
+    timerEl.textContent = fmt(elapsed);
+    if (elapsed >= MAX_MS) return;
+    rafId = requestAnimationFrame(updateProgress);
+  }
+
+  function resetUI() {
+    cancelAnimationFrame(rafId);
+    clearTimeout(autoStopId);
+    rafId = null;
+    autoStopId = null;
+    barEl.style.width = '0%';
+    timerEl.textContent = '00:09.000';
+    statusEl.textContent = 'Ready';
+    recordBtn.disabled = false;
+    recordBtn.setAttribute('aria-pressed', 'false');
+    stopBtn.disabled = true;
+    playBtn.disabled = !player.src;
+    downloadBtn.disabled = !player.src;
+  }
+
+  async function ensureStream() {
+    if (stream && stream.active) return stream;
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return stream;
+  }
+
+  function pickMime() {
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus',
+    ];
+    for (const t of candidates) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return '';
+  }
+
+  function stopTracks() {
+    if (!stream) return;
+    stream.getTracks().forEach(t => t.stop());
+  }
+
+  async function startRecording() {
+    try {
+      chunks = [];
+      const s = await ensureStream();
+      const mime = pickMime();
+      mediaRecorder = mime ? new MediaRecorder(s, { mimeType: mime }) : new MediaRecorder(s);
+
+      mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      mediaRecorder.onstart = () => {
+        startTs = Date.now();
+        statusEl.textContent = 'Recording…';
+        recordBtn.disabled = true;
+        recordBtn.setAttribute('aria-pressed', 'true');
+        stopBtn.disabled = false;
+        playBtn.disabled = true;
+        downloadBtn.disabled = true;
+        updateProgress();
+        autoStopId = setTimeout(stopRecording, MAX_MS);
+      };
+      mediaRecorder.onstop = () => {
+        cancelAnimationFrame(rafId);
+        clearTimeout(autoStopId);
+        rafId = null; autoStopId = null;
+        const type = mediaRecorder.mimeType || 'audio/webm';
+        const blob = new Blob(chunks, { type });
+        if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+        currentBlobUrl = URL.createObjectURL(blob);
+        player.src = currentBlobUrl;
+        statusEl.textContent = 'Recorded';
+        recordBtn.disabled = false;
+        recordBtn.setAttribute('aria-pressed', 'false');
+        stopBtn.disabled = true;
+        playBtn.disabled = false;
+        downloadBtn.disabled = false;
+        stopTracks();
+        downloadBtn.onclick = () => {
+          const a = document.createElement('a');
+          a.href = currentBlobUrl;
+          a.download = 'recording.webm';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        };
+      };
+
+      mediaRecorder.start();
+    } catch (err) {
+      statusEl.textContent = 'Mic blocked. Enable permissions in your browser settings.';
+      console.error(err);
+      resetUI();
+    }
+  }
+
+  function stopRecording() {
+    try {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    } catch (e) {
+      console.error(e);
+      resetUI();
+    }
+  }
+
+  recordBtn.addEventListener('click', startRecording);
+  stopBtn.addEventListener('click', stopRecording);
+  playBtn.addEventListener('click', () => {
+    if (!player.src) return;
+    player.currentTime = 0;
+    player.play();
+  });
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    supportBadge.textContent = 'Mic not supported';
+    statusEl.textContent = 'Your browser does not support microphone access.';
+    recordBtn.disabled = true;
+    stopBtn.disabled = true;
+    playBtn.disabled = true;
+    downloadBtn.disabled = true;
+  } else {
+    supportBadge.textContent = 'Mic ready';
+  }
+})();
+</script>
+</body>
+</html>
